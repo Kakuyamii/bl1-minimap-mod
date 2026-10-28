@@ -1,0 +1,16 @@
+[project]
+name = "Minimap"
+version = "0.2.9"
+description = "Backport of enhanced's minimap to original GOTY. Configurable."
+authors = [{name = "kakuyamii"}]
+
+[project.urls]
+Source = "https://github.com/Kakuyamii/bl1-minimap-mod"
+"Issue Tracker" = "https://github.com/Kakuyamii/bl1-minimap-mod/issues"
+
+[tool.sdkmod]
+name = "Minimap"
+supported_games = ["BL1"]
+coop_support = "ClientSide"
+auto_enable = true
+download = "https://github.com/Kakuyamii/bl1-minimap-mod/releases/latest/download/Minimap.sdkmod"
