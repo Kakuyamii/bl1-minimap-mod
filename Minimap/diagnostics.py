@@ -15,6 +15,10 @@ class Diagnostics:
         self._owns_fault_handler = False
         self._seen = set()
 
+    @property
+    def active(self):
+        return self._file is not None
+
     def start(self):
         if self._file is not None:
             return
@@ -28,7 +32,7 @@ class Diagnostics:
         self.path = folder / f"minimap-{stamp}-{os.getpid()}.jsonl"
         self._file = self.path.open("x", encoding="utf-8", buffering=1)
         self._seen.clear()
-        self.record("session.begin", version="0.2.9", pid=os.getpid())
+        self.record("session.begin", version="0.2.10", pid=os.getpid())
         if default_directory:
             self.collect_native_dumps(Path.home() / "Documents" / "my games" /
                                       "borderlands" / "WillowGame" / "Logs")

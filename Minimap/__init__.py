@@ -22,6 +22,12 @@ ROTATE_MINIMAP = BoolOption("Rotate minimap", False, description="Rotate the map
 ZOOM = SliderOption("Minimap zoom", 400, 100, 1000, 25,
                     description="Map magnification in percent. Higher values show a smaller area.")
 
+CRASH_LOGS = BoolOption(
+    "Enable crash logs", False,
+    description="Write diagnostic files and collect available crash dumps. Off by default.",
+    on_change_while_enabled=lambda option, value: _set_crash_logs(value),
+)
+
 _diagnostics = Diagnostics()
 _flash = FlashMinimap(checkpoint=_diagnostics.checkpoint)
 _compass = CompassVisibility()
@@ -279,14 +285,22 @@ def player_destroyed(obj, args, ret, func):
         _end_session()
 
 
-def enable():
-    global _blocked_world
-    _blocked_world = None
+def _set_crash_logs(enabled):
+    if not enabled:
+        _diagnostics.stop()
+        return
     try:
         _diagnostics.start()
         logging.info(f"[Minimap] Diagnostics: {_diagnostics.path}")
     except OSError as exc:
+        _diagnostics.stop()
         logging.error(f"[Minimap] Could not create diagnostic log: {exc}")
+
+
+def enable():
+    global _blocked_world
+    _blocked_world = None
+    _set_crash_logs(CRASH_LOGS.value)
 
 
 def disable():
@@ -298,13 +312,14 @@ def disable():
 
 @command("minimap_status", description="Print minimap runtime diagnostics to the SDK log.")
 def status(args):
-    logging.info(f"[Minimap 0.2.9] {_status}; diagnostics={_diagnostics.path}")
+    diagnostics = str(_diagnostics.path) if _diagnostics.active else "off"
+    logging.info(f"[Minimap 0.2.10] {_status}; diagnostics={diagnostics}")
     obj = _helper() if _helper is not None else None
     if obj is not None:
         logging.info(f"[Minimap] Anchor={obj.Anchor}, CoordScale={obj.CoordScale}, Transform={obj.Transform}")
 
 
-build_mod(options=[SHOW_COMPASS, SHOW_MINIMAP, ROTATE_MINIMAP, ZOOM],
+build_mod(options=[SHOW_COMPASS, SHOW_MINIMAP, ROTATE_MINIMAP, ZOOM, CRASH_LOGS],
           auto_enable=True,
           hooks=[render, pre_travel, return_to_title, session_ended, player_destroyed], commands=[status], on_enable=enable,
           on_disable=disable, supported_games=Game.BL1)
