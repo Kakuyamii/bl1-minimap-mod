@@ -1,4 +1,4 @@
-def hidden_reason(pc):
+def hidden_reason(pc, *, allow_pause=False):
     hud = pc.myHUD
     if hud is None:
         return "no vanilla HUD"
@@ -10,7 +10,7 @@ def hidden_reason(pc):
 
     if pc.bStatusMenuOpen:
         return "status menu open"
-    if pc.WorldInfo.Pauser is not None:
+    if not allow_pause and pc.WorldInfo.Pauser is not None:
         return "game paused"
     movie = hud.GetHUDMovie()
     if movie is None:

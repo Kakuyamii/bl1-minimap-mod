@@ -1,6 +1,6 @@
 [project]
 name = "Minimap"
-version = "0.2.10"
+version = "0.2.12"
 description = "Backport of enhanced's minimap to original GOTY. Configurable."
 authors = [{name = "kakuyamii"}]
 

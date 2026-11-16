@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 
 import unrealsdk
@@ -8,7 +9,8 @@ from unrealsdk.hooks import Type
 from unrealsdk.unreal import WeakPointer
 from mods_base import BoolOption, SliderOption, Game, ObjectFlags, build_mod, command, get_pc, hook
 
-from .compass import CompassVisibility
+from .compass import CompassVisibility, EchoPosition
+from .missions import mission_markers
 from .flash import FlashMinimap
 from .diagnostics import Diagnostics
 from .geometry import Projection, coordinate_scale
@@ -31,6 +33,9 @@ CRASH_LOGS = BoolOption(
 _diagnostics = Diagnostics()
 _flash = FlashMinimap(checkpoint=_diagnostics.checkpoint)
 _compass = CompassVisibility()
+_echo = EchoPosition(WeakPointer)
+_mission_rows = []
+_next_mission_update = 0.0
 _layer = HUDLayer()
 _blocked_world = None
 _next_threat_update = 0.0
@@ -58,7 +63,10 @@ def _projection(matrix):
 def reset():
     global _helper, _owner, _world, _next_refresh, _retry_at, _status
     global _map_key, _map_ready, _marker_signature, _marker_paths
-    global _next_threat_update, _threat_error
+    global _next_threat_update, _threat_error, _next_mission_update
+    _next_mission_update = 0.0
+    _mission_rows.clear()
+    _echo.restore()
     _next_threat_update = 0.0
     _threat_error = None
     obj = _helper() if _helper is not None else None
@@ -143,22 +151,19 @@ def _prepare_map(helper):
 
 def _update_markers(helper):
     global _marker_signature, _marker_paths
-    markers = list(helper.MapObjects)
-    signature = tuple((str(m.AS_IconClipPath), str(m.AS_IconClipFrame)) for m in markers)
+    rows = [(str(m.AS_IconClipPath).removeprefix('map.'), str(m.AS_IconClipFrame), bool(m.bIsDirty),
+             float(m.TransformedLocation.X), float(m.TransformedLocation.Y), float(m.Angle))
+            for m in helper.MapObjects]
+    rows.extend(_mission_rows)
+    signature = tuple((row[0], row[1]) for row in rows)
     if signature != _marker_signature:
         _flash.clear_landmarks()
-        _marker_paths = [None] * len(markers)
+        _marker_paths = [None] * len(rows)
         _marker_signature = signature
-    for i, marker in enumerate(markers):
+    for i, (clip, frame, visible, x, y, angle) in enumerate(rows):
         path = _marker_paths[i]
-        visible = bool(marker.bIsDirty)
         if visible:
-            x, y = float(marker.TransformedLocation.X), float(marker.TransformedLocation.Y)
-            angle = float(marker.Angle)
             if path is None:
-                clip, frame = signature[i]
-
-                clip = clip.removeprefix("map.")
                 if not clip or not frame:
                     continue
                 path = _flash.add_landmark(clip, x, y, angle, frame)
@@ -171,11 +176,11 @@ def _update_markers(helper):
 
 
 def _draw(canvas, pc, helper):
-    global _status, _next_threat_update, _threat_error
+    global _status, _next_threat_update, _threat_error, _next_mission_update
     _layer.update(pc)
     _flash.ensure(pc)
     if not _prepare_map(helper):
-        _flash.hide()
+        _hide()
         return
     scale = float(canvas.SizeY) / 1080.0
     width, height = 260 * scale, 220 * scale
@@ -189,8 +194,15 @@ def _draw(canvas, pc, helper):
             heading = float(marker.Angle)
             break
     _flash.set_view(*center, heading, ROTATE_MINIMAP.value, float(ZOOM.value))
-    _update_markers(helper)
     now = time.monotonic()
+    if now >= _next_mission_update:
+        _next_mission_update = now + 2.0
+        try:
+            _mission_rows[:] = mission_markers(pc, _projection(helper.Transform), helper.CoordScale)
+        except Exception as exc:
+            _mission_rows.clear()
+            _diagnostics.error(exc)
+    _update_markers(helper)
     if now >= _next_threat_update:
         try:
             _flash.update_threats(serialize_threats(pc, _projection(helper.Transform), helper.CoordScale))
@@ -208,9 +220,20 @@ def _draw(canvas, pc, helper):
             except Exception:
                 pass
     _flash.show()
+    _echo.update(pc.myHUD.GetHUDMovie())
     _status = f"Rendering vector map {_map_key[0]}; rotate={ROTATE_MINIMAP.value}"
     if _threat_error:
         _status += f"; enemy markers unavailable: {_threat_error}"
+
+
+def _hide():
+    _echo.restore()
+    _flash.hide()
+
+
+def release_gameplay_priority(pc):
+    if pc.myHUD is not None and _layer.pointer is not None and _layer.pointer() == pc.myHUD.GetHUDMovie():
+        _layer.restore()
 
 
 @hook("Engine.GameViewportClient:PostRender", Type.POST)
@@ -227,9 +250,22 @@ def render(obj, args, ret, func):
             if _blocked_world() == pc.WorldInfo:
                 return
             _blocked_world = None
+        enhanced = sys.modules.get('EnhancedHUD')
+        pause_active = getattr(enhanced, 'pause_overlay_active', None)
+        if pause_active is not None and pause_active(pc):
+            # Retain the live movie and its last viewport while Esc owns focus.
+            # Starting a new movie here could put it in front of the menu.
+            if (SHOW_MINIMAP.value and _map_ready and _world is not None
+                    and _world() == pc.WorldInfo and _owner is not None and _owner() == pc
+                    and hidden_reason(pc, allow_pause=True) is None):
+                _flash.show()
+                _status = 'Minimap visible behind the Enhanced pause menu'
+            else:
+                _hide()
+            return
         reason = hidden_reason(pc)
         if reason is not None:
-            _flash.hide()
+            _hide()
             _layer.restore()
             _status = f"Minimap hidden: {reason}"
             return
@@ -240,12 +276,12 @@ def render(obj, args, ret, func):
         else:
             _layer.restore()
             _compass.update(pc, SHOW_COMPASS.value)
-            _flash.hide()
+            _hide()
             _status = "Minimap hidden by option"
     except Exception as exc:
         _diagnostics.error(exc)
         try:
-            _flash.hide()
+            _hide()
         except Exception:
             pass
         message = f"{type(exc).__name__}: {exc}"
@@ -313,7 +349,7 @@ def disable():
 @command("minimap_status", description="Print minimap runtime diagnostics to the SDK log.")
 def status(args):
     diagnostics = str(_diagnostics.path) if _diagnostics.active else "off"
-    logging.info(f"[Minimap 0.2.10] {_status}; diagnostics={diagnostics}")
+    logging.info(f"[Minimap 0.2.11] {_status}; diagnostics={diagnostics}")
     obj = _helper() if _helper is not None else None
     if obj is not None:
         logging.info(f"[Minimap] Anchor={obj.Anchor}, CoordScale={obj.CoordScale}, Transform={obj.Transform}")
